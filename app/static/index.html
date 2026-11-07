@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ReviewMood - 리뷰 감성 분석</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <h1>ReviewMood</h1>
+      <p class="sub">영어 리뷰를 붙여 넣으면 AI가 <b>긍정</b>인지 <b>부정</b>인지 분석해 드려요.</p>
+    </header>
+
+    <section class="card">
+      <label for="text" class="label">리뷰 문장 (영어)</label>
+      <textarea id="text" rows="6" maxlength="5000"
+        placeholder="예) The battery lasts all day and the screen is gorgeous. Totally worth the price!"></textarea>
+      <div class="row">
+        <div class="samples">
+          <span>예시:</span>
+          <button type="button" class="chip" data-text="Absolutely love this blender. It crushes ice in seconds and is easy to clean.">긍정</button>
+          <button type="button" class="chip" data-text="Stopped working after two weeks. Customer support never answered my emails. Waste of money.">부정</button>
+          <button type="button" class="chip" data-text="Not bad at all, but I expected the sound to be much better for this price.">애매함</button>
+        </div>
+        <span id="count" class="count">0 / 5000</span>
+      </div>
+      <button id="go" class="primary" type="button">분석하기</button>
+      <p id="error" class="error" hidden></p>
+    </section>
+
+    <section id="result" class="card" hidden>
+      <div class="verdict">
+        <span id="emoji" class="emoji"></span>
+        <div>
+          <div id="label" class="big"></div>
+          <div id="score" class="muted"></div>
+        </div>
+      </div>
+      <div class="bar" aria-label="긍정 비율">
+        <div id="bar-neg" class="neg"></div><div id="bar-pos" class="pos"></div>
+      </div>
+      <div class="bar-legend"><span>부정</span><span>긍정</span></div>
+      <h3>모델 원본 출력</h3>
+      <ul id="detail" class="detail"></ul>
+      <p id="meta" class="muted small"></p>
+    </section>
+
+    <footer class="muted small">
+      <span id="server">서버 확인 중...</span> ·
+      <a href="/docs">API 문서 (/docs)</a>
+    </footer>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

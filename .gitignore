@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# 대용량 모델 파일 (scripts/download_model.py 로 내려받음)
+models/
+*.onnx
+*.part
+
+# 인증정보
+.env
+.env.*
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# GitHub self-hosted runner (저장소 밖 ~/actions-runner 에 설치하지만, 혹시 안에 만들어도 제외)
+actions-runner/
+_diag/
+_work/
+.runner
+.credentials
+.credentials_rsaparams
+
+# 모델 평가 데이터·캐시·결과 원본 (scripts/prepare_eval_data.py, scripts/evaluate.py 로 재생성)
+data/
+reports/eval_*.json
+
+# 배포 모니터 로그 (GitHub Actions Artifacts 로 보관)
+zero-downtime-monitor/
+monitor-out/
+*.log

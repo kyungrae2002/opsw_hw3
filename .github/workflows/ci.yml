@@ -1,0 +1,175 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: reviewmood
+
+jobs:
+  # 1) 테스트: 버전 고정된 의존성 설치 → 모델 다운로드(SHA256 확인) → 모델 검증 → pytest
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Cache model
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: models-${{ hashFiles('scripts/download_model.py', 'app/model.py') }}
+
+      - name: Download & verify model files (SHA256)
+        run: python scripts/download_model.py
+
+      - name: Verify model loads and runs
+        run: python scripts/verify_model.py
+
+      - name: Run tests
+        run: pytest -v
+
+  # 2) Docker 이미지 빌드(빌드 중 모델 검증) → 컨테이너 스모크 테스트 → Docker Hub 푸시
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Image metadata (tags)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+            type=ref,event=pr
+
+      # Dockerfile 의 scripts/verify_model.py 가 실패하면 여기서 빌드가 중단됨
+      - name: Build image (load for testing)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:ci
+          build-args: GIT_COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test container
+        run: |
+          docker run -d --name app -p 8000:8000 ${{ env.IMAGE_NAME }}:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8000/api/health && break
+            sleep 2
+          done
+          echo
+          curl -fsS http://127.0.0.1:8000/api/health | grep '"loaded":true'
+          curl -fsS -X POST -H "Content-Type: application/json" \
+            --data @deploy/test-input.json http://127.0.0.1:8000/api/analyze | tee /dev/stderr | grep '"label":"positive"'
+          curl -fsS -o /dev/null http://127.0.0.1:8000/docs
+          docker logs app
+          docker rm -f app
+
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # self-hosted runner(Apple Silicon Mac)에서 에뮬레이션 없이 돌도록 amd64 + arm64 함께 빌드
+      - uses: docker/setup-qemu-action@v3
+        if: github.event_name != 'pull_request'
+
+      - name: Build & push to Docker Hub (multi-arch)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: GIT_COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # 3) CD: 내 Mac(self-hosted runner)에서 새 이미지로 무중단(Blue-Green) 교체
+  #    배포 전에 독립 모니터를 띄워 배포 전·중·후(+30초) 동안 1초마다 실제 분석 API를 호출해 기록
+  deploy:
+    needs: docker
+    if: github.event_name != 'pull_request'
+    runs-on: self-hosted
+    concurrency:
+      group: local-deploy
+      cancel-in-progress: false
+    env:
+      DEPLOY_PORT: "8080"
+      SERVICE_URL: http://127.0.0.1:8080
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Start independent monitor (before deploy)
+        run: |
+          MON_DIR="$RUNNER_TEMP/zero-downtime-monitor"
+          rm -rf "$MON_DIR" && mkdir -p "$MON_DIR"
+          echo "MON_DIR=$MON_DIR" >> "$GITHUB_ENV"
+          nohup python3 deploy/monitor.py run --url "$SERVICE_URL" \
+            --input deploy/test-input.json --out "$MON_DIR" \
+            --interval 1 --post-seconds 30 > "$MON_DIR/monitor.stdout" 2>&1 &
+          echo "모니터 PID: $!"
+          python3 deploy/monitor.py wait-ready --out "$MON_DIR" --timeout 30
+
+      - name: Pull new image & replace container (blue-green)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          IMAGE="$DOCKERHUB_USERNAME/${IMAGE_NAME}:sha-${GITHUB_SHA:0:7}"
+          python3 deploy/monitor.py mark --out "$MON_DIR" deploy_start
+          rc=0
+          bash deploy/deploy.sh "$IMAGE" || rc=$?
+          python3 deploy/monitor.py mark --out "$MON_DIR" deploy_end --result "$rc"
+          exit $rc
+
+      - name: Keep monitoring 30s after deploy & write summary
+        if: always()
+        run: python3 deploy/monitor.py report --out "${MON_DIR:-$RUNNER_TEMP/zero-downtime-monitor}" --expected-commit "${GITHUB_SHA:0:7}"
+
+      - name: Verify deployed service (model, web page, API docs)
+        run: |
+          curl -fsS "$SERVICE_URL/api/health" | tee /dev/stderr | grep -q '"loaded":true'
+          curl -fsS -o /dev/null "$SERVICE_URL/"
+          curl -fsS -o /dev/null "$SERVICE_URL/docs"
+          docker ps --filter name=reviewmood --format '{{.Names}}  {{.Image}}  {{.Status}}'
+
+      - name: Upload monitor logs (UTF-8)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zero-downtime-monitor
+          path: ${{ env.MON_DIR }}
+          if-no-files-found: warn

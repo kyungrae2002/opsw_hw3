@@ -1,0 +1,15 @@
+.git
+.github
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/
+models/
+tests/
+data/
+reports/
+deploy/
+actions-runner/
+monitor-out/
+*.md
