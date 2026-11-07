@@ -43,7 +43,7 @@ MODELS: dict[str, list[tuple[str, str, str]]] = {
          "1e6506713f00e34406a757acb80f9f3233c1c3950857d32bbc41bcd419d5d8b6"),
     ],
 }
-DEFAULT_MODEL = "distilbert-sst2"  # app/model.py 의 DEFAULT_MODEL 과 같아야 함
+DEFAULT_MODEL = "nlptown-stars"  # app/model.py 의 DEFAULT_MODEL 과 같아야 함
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 

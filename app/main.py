@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from app.model import MODEL_SPECS, InvalidTextError, SentimentModel
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 MAX_CHARS = 5000
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -77,7 +77,7 @@ def health() -> dict:
 @app.get("/api/models")
 def models() -> dict:
     """등록된 모델 설정 목록 (실험용 포함)."""
-    return {name: {"source": s.source, "output": s.output, "truncation": s.truncation, "clean": s.clean}
+    return {name: {"source": s.source, "output": s.output, "neutral": s.neutral}
             for name, s in MODEL_SPECS.items()}
 
 

@@ -21,9 +21,11 @@ curl -X POST http://localhost:8080/api/analyze \
 
 | 이름 | 원본 | 라이선스 | 출력 |
 |---|---|---|---|
-| `distilbert-sst2` | distilbert/distilbert-base-uncased-finetuned-sst-2-english | Apache-2.0 | 2클래스 |
-| `nlptown-stars` | nlptown/bert-base-multilingual-uncased-sentiment (ONNX: Xenova, INT8) | MIT | 별점 1~5 |
+| `distilbert-sst2` (v1.0 기준선) | distilbert/distilbert-base-uncased-finetuned-sst-2-english | Apache-2.0 | 2클래스 |
+| **`nlptown-stars` (v1.1 기본값)** | nlptown/bert-base-multilingual-uncased-sentiment (ONNX: Xenova, INT8) | MIT | 별점 1~5 |
 | `twitter-roberta` | cardiffnlp/twitter-roberta-base-sentiment-latest (ONNX: Xenova, INT8) | CC BY 4.0 | 3클래스 |
+
+모델 교체 실험(tune 30 / test 70건, test 정확도 90.0% → 94.3%)은 [reports/model_update.md](reports/model_update.md) 참고.
 
 모델 파일은 Git 에 올리지 않고 `scripts/download_model.py` 가 커밋 고정 URL 에서 받아 SHA256 으로 검증합니다.
 Docker 빌드 중 `scripts/verify_model.py` 가 실제 추론을 해 보고, 실패하면 빌드가 중단됩니다.

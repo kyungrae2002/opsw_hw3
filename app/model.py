@@ -8,9 +8,7 @@
 
 from __future__ import annotations
 
-import html
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,7 +20,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 MODELS_DIR = BASE_DIR / "models"
 
 # 모델 출력(클래스 순서)과 긍정/부정으로 합칠 때의 가중치.
-# 중립(3클래스의 neutral, 별점 3점)은 긍정·부정에 반씩 나눕니다.
+# 가중치 0.5 는 중립(3클래스의 neutral, 별점 3점) - ModelSpec.neutral 에 따라 처리합니다.
 OUTPUT_KINDS: dict[str, tuple[list[str], list[float]]] = {
     "binary": (["NEGATIVE", "POSITIVE"], [0.0, 1.0]),
     "3class": (["negative", "neutral", "positive"], [0.0, 0.5, 1.0]),
@@ -36,9 +34,10 @@ class ModelSpec:
     tokenizer: str  # models/ 안의 tokenizer.json
     output: str  # OUTPUT_KINDS 의 키
     source: str  # 원본 모델 (Hugging Face)
-    max_tokens: int = 512  # 특수 토큰 포함 최대 길이
-    truncation: str = "head"  # "head": 앞부분만, "head_tail": 앞+뒤 (긴 리뷰의 결론부 보존)
-    clean: bool = False  # HTML 엔티티·반복 문장부호·공백 정리
+    max_tokens: int = 512  # 특수 토큰 포함 최대 길이 (넘으면 앞부분만 사용)
+    # 중립 확률 처리: "split" = 긍정·부정에 반씩 나눔,
+    #                 "ignore" = 중립을 빼고 긍정 vs 부정 확률만 다시 정규화 (애매한 리뷰도 기울어진 쪽으로 판정)
+    neutral: str = "split"
 
 
 # 기존(v1.0) 모델 + 개선 실험에서 시도한 설정 (scripts/download_model.py 와 파일명이 같아야 함)
@@ -48,31 +47,27 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         "distilbert-sst2.onnx", "distilbert-sst2.tokenizer.json", "binary",
         "distilbert/distilbert-base-uncased-finetuned-sst-2-english",
     ),
-    # 후보: 상품 리뷰 별점(1~5)으로 학습한 다국어 BERT (MIT), INT8 양자화 ONNX
+    # 시도 1 (v1.1 채택): 사전학습 모델 교체 - 상품 리뷰 별점(1~5)으로 학습한 다국어 BERT (MIT), INT8 양자화 ONNX
     "nlptown-stars": ModelSpec(
         "nlptown-stars-int8.onnx", "nlptown-stars.tokenizer.json", "stars5",
         "nlptown/bert-base-multilingual-uncased-sentiment (ONNX: Xenova)",
     ),
-    # 후보: 트윗으로 학습한 RoBERTa 3클래스 (CC BY 4.0), INT8 양자화 ONNX
+    # 시도 2 (미채택): 같은 모델, 후처리 변경 - 별점 3점을 제외하고 1~2점 vs 4~5점으로 판정
+    "nlptown-stars-polar": ModelSpec(
+        "nlptown-stars-int8.onnx", "nlptown-stars.tokenizer.json", "stars5",
+        "nlptown/bert-base-multilingual-uncased-sentiment (ONNX: Xenova)", neutral="ignore",
+    ),
+    # 예비 후보 (시도 횟수 제한으로 평가하지 않음): 트윗으로 학습한 RoBERTa 3클래스 (CC BY 4.0), INT8 양자화 ONNX
     "twitter-roberta": ModelSpec(
         "twitter-roberta-int8.onnx", "twitter-roberta.tokenizer.json", "3class",
         "cardiffnlp/twitter-roberta-base-sentiment-latest (ONNX: Xenova)",
     ),
 }
-DEFAULT_MODEL = "distilbert-sst2"  # scripts/download_model.py 의 DEFAULT_MODEL 과 같아야 함
-
-HEAD_TOKENS = 128  # head_tail 방식에서 앞부분에 남길 토큰 수 (나머지는 뒷부분)
+DEFAULT_MODEL = "nlptown-stars"  # scripts/download_model.py 의 DEFAULT_MODEL 과 같아야 함
 
 
 class InvalidTextError(ValueError):
     """분석할 수 없는 입력(빈 문자열 등)."""
-
-
-def clean_text(text: str) -> str:
-    text = html.unescape(text)
-    text = re.sub(r"<br\s*/?>", " ", text, flags=re.I)
-    text = re.sub(r"([!?.])\1{2,}", r"\1\1", text)  # "!!!!!" → "!!"
-    return re.sub(r"\s+", " ", text).strip()
 
 
 class SentimentModel:
@@ -110,15 +105,10 @@ class SentimentModel:
         room = self.spec.max_tokens - len(self.prefix) - len(self.suffix)
         truncated = len(body) > room
         if truncated:
-            if self.spec.truncation == "head_tail":
-                body = body[:HEAD_TOKENS] + body[-(room - HEAD_TOKENS):]
-            else:
-                body = body[:room]
+            body = body[:room]
         return self.prefix + body + self.suffix, truncated
 
     def analyze(self, text: str) -> dict:
-        if self.spec.clean:
-            text = clean_text(text)
         if not text or not text.strip():
             raise InvalidTextError("분석할 문장을 입력해 주세요.")
         ids, truncated = self.encode(text)
@@ -130,7 +120,13 @@ class SentimentModel:
         exp = np.exp(logits - logits.max())
         probs = exp / exp.sum()
 
-        positive = float(np.clip(probs @ self.pos_weights, 0.0, 1.0))
+        w = self.pos_weights
+        if self.spec.neutral == "ignore":
+            polar = w != 0.5
+            positive = float(probs[polar] @ w[polar] / probs[polar].sum())
+        else:
+            positive = float(probs @ w)
+        positive = min(max(positive, 0.0), 1.0)
         label = "positive" if positive >= 0.5 else "negative"
         return {
             "label": label,
